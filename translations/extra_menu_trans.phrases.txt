@@ -1,0 +1,37 @@
+"Phrases"
+{
+	"EXTRA_MENU_OPTIONS"
+	{
+		"en"	"MENU OPTIONS:"
+	}
+
+	"EXTRA_MENU_SELECT"
+	{
+		"en"	"Use W/S to move row and A/D to select"
+	}
+
+	"EXTRA_MENU_OPT_1"
+	{
+		"en"	"1. Row Option A: _OPT_"
+	}
+
+	"EXTRA_MENU_OPT_2"
+	{
+		"en"	"2. Row Option B: _OPT_"
+	}
+
+	"EXTRA_MENU_TESTER"
+	{
+		"en"	"3. Test Numbers: _OPT_"
+	}
+
+	"EXTRA_MENU_TEST"
+	{
+		"en"	"One|Two|Three"
+	}
+
+	"EXTRA_MENU_NEW_MENU"
+	{
+		"en"	"4. Open a new menu"
+	}
+}
