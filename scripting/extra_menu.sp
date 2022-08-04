@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"1.0"
+#define PLUGIN_VERSION 		"1.1"
 
 /*======================================================================================
 	Plugin Info:
@@ -31,6 +31,10 @@
 
 ========================================================================================
 	Change Log:
+
+1.1 (04-Aug-2022)
+	- Fixed the button sounds not playing.
+	- Fixed the menu not ending when interrupted by another menu.
 
 1.0 (30-Jul-2022)
 	- Initial release.
@@ -221,9 +225,24 @@ public void OnPluginStart()
 	// Translations
 	LoadTranslations("core.phrases");
 
+	// Sound path
+	char sTemp[64];
+	EngineVersion engine = GetEngineVersion();
+	switch( engine )
+	{
+		case Engine_Left4Dead, Engine_Left4Dead2:
+		{
+			sTemp = "buttons/blip1.wav";
+		}
+		default:
+		{
+			sTemp = "buttons/combine_button7.wav";
+		}
+	}
+
 	// Cvars
 	g_hCvarSoundMove =		CreateConVar("extra_menu_sound_move",	"buttons/button14.wav", 		"Path to the sound to play when moving through the menu. Or \"\" for no sound.", FCVAR_NOTIFY);
-	g_hCvarSoundClick =		CreateConVar("extra_menu_sound_click",	"buttons/combine_button7.wav",	"Path to the sound to play when clicking a menu option. Or \"\" for no sound.", FCVAR_NOTIFY);
+	g_hCvarSoundClick =		CreateConVar("extra_menu_sound_click",	sTemp,							"Path to the sound to play when clicking a menu option. Or \"\" for no sound.", FCVAR_NOTIFY);
 	CreateConVar("extra_menu_version", PLUGIN_VERSION, "Extra Sound API plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD );
 	AutoExecConfig(true, "extra_menu_api");
 
@@ -736,12 +755,13 @@ int MenuExtra_Handler(Menu menu, MenuAction action, int client, int type)
 		}
 		case MenuAction_Cancel:
 		{
-			if( type == MenuCancel_Exit )
+			switch( type )
 			{
-				g_iMenuID[client] = -1;
-				g_iSelected[client] = 0;
-				g_bMenuOpen[client] = false;
-				SetEntityMoveType(client, MOVETYPE_WALK);
+				case MenuCancel_Exit, MenuCancel_Interrupted, MenuCancel_Timeout:
+				{
+					g_bMenuOpen[client] = false;
+					SetEntityMoveType(client, MOVETYPE_WALK);
+				}
 			}
 		}
 		case MenuAction_End:
@@ -804,7 +824,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 					// Sound
 					if( g_sCvarSoundMove[0] )
 					{
-						EmitGameSoundToClient(client, g_sCvarSoundMove);
+						EmitSoundToClient(client, g_sCvarSoundMove);
 					}
 
 					// Redisplay menu
@@ -846,7 +866,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 					// Sound
 					if( g_sCvarSoundMove[0] )
 					{
-						EmitGameSoundToClient(client, g_sCvarSoundMove);
+						EmitSoundToClient(client, g_sCvarSoundMove);
 					}
 
 					// Redisplay menu
@@ -920,7 +940,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 				// Sound
 				if( g_sCvarSoundClick[0] )
 				{
-					EmitGameSoundToClient(client, g_sCvarSoundClick);
+					EmitSoundToClient(client, g_sCvarSoundClick);
 				}
 
 				// Display
@@ -1008,7 +1028,7 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 				// Sound
 				if( g_sCvarSoundClick[0] )
 				{
-					EmitGameSoundToClient(client, g_sCvarSoundClick);
+					EmitSoundToClient(client, g_sCvarSoundClick);
 				}
 
 				// Display

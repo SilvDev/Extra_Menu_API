@@ -36,7 +36,7 @@ enum EXTRA_MENU_TYPE
 
 
 /**
-* @brief Creates a new menu
+* @brief Creates a new menu.
 *
 * @param	back			Gives a "Previous" option to the menu on the 1st page, useful to return to another menu
 * @param	translation		Path to a translation file used for "ExtraMenu_AddEntry" entries or "" for no translation
@@ -46,7 +46,7 @@ enum EXTRA_MENU_TYPE
 native int ExtraMenu_Create(bool back = false, char[] translation = "");
 
 /**
-* @brief Deletes the specified menu
+* @brief Deletes the specified menu.
 *
 * @param	menu_id			The menu ID to delete, returned from ExtraMenu_Create()
 *
@@ -81,7 +81,7 @@ native bool ExtraMenu_AddEntry(int menu_id, char[] entry, EXTRA_MENU_TYPE type, 
 native bool ExtraMenu_AddOptions(int menu_id, char[] entry);
 
 /**
-* @brief Adds the next "ExtraMenu_AddEntry" data to a new page and creates the "Next Page" and "Previous Page" options
+* @brief Adds the next "ExtraMenu_AddEntry" data to a new page and creates the "Next Page" and "Previous Page" options.
 *
 * @param	menu_id			The menu ID to modify, returned from ExtraMenu_Create()
 *

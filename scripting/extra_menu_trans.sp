@@ -107,7 +107,7 @@ public void OnLibraryAdded(const char[] name)
 		ExtraMenu_AddEntry(menu_id, " ",										MENU_ENTRY); // Space to add blank entry
 		ExtraMenu_AddEntry(menu_id, "Press 1. to return to the previous menu",	MENU_ENTRY);
 
-		ExtraMenu_AddEntry(menu_id, " ",						MENU_ENTRY); // Space to add blank entry
+		ExtraMenu_AddEntry(menu_id, " ",										MENU_ENTRY); // Space to add blank entry
 
 		// Store your menu ID to use later
 		g_iMenuID2 = menu_id;
