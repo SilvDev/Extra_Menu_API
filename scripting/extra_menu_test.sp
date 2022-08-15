@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"1.0"
+#define PLUGIN_VERSION 		"1.2"
 
 /*======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.2 (15-Aug-2022)
+	- Added a "meter" options demonstration.
 
 1.0 (30-Jul-2022)
 	- Initial release.
@@ -100,6 +103,9 @@ public void OnLibraryAdded(const char[] name)
 		ExtraMenu_AddEntry(menu_id, "7. Slay Self",								MENU_SELECT_ONLY);
 		ExtraMenu_AddEntry(menu_id, "8. Default On: _OPT_",						MENU_SELECT_ONOFF, false, 1);
 		ExtraMenu_AddEntry(menu_id, "9. Close After Use",						MENU_SELECT_ONLY, true);
+		ExtraMenu_AddEntry(menu_id, " ",										MENU_ENTRY); // Space to add blank entry
+		ExtraMenu_AddEntry(menu_id, "10. Meter: _OPT_",							MENU_SELECT_LIST);
+		ExtraMenu_AddOptions(menu_id, "□□□□□□□□□□|■□□□□□□□□□|■■□□□□□□□□|■■■□□□□□□□|■■■■□□□□□□|■■■■■□□□□□|■■■■■■□□□□|■■■■■■■□□□|■■■■■■■■□□|■■■■■■■■■□|■■■■■■■■■■");	// Various selectable options
 		ExtraMenu_AddEntry(menu_id, " ",										MENU_ENTRY); // Space to add blank entry
 
 		ExtraMenu_NewPage(menu_id); // New Page

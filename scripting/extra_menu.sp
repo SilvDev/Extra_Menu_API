@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"1.1"
+#define PLUGIN_VERSION 		"1.2"
 
 /*======================================================================================
 	Plugin Info:
@@ -31,6 +31,11 @@
 
 ========================================================================================
 	Change Log:
+
+1.2 (15-Aug-2022)
+	- Fixed errors thrown when displaying a menu and the clients index is 0.
+	- Increased the maximum length of rows to support multi-byte characters.
+	- Added a "meter" option demonstration to the "extra_menu_test" plugin.
 
 1.1 (04-Aug-2022)
 	- Fixed the button sounds not playing.
@@ -50,12 +55,13 @@
 #pragma newdecls required
 
 
-#define MAX_LEN_TRANS	128		// Maximum length of translation file strings for menu
-#define MAX_LEN_OPTIONS	255		// Maximum length of options string
-#define MAX_LINE_LEN	255		// Maximum string length per row
+#define MAX_LEN_TRANS	128		// Maximum length of translation file name for menu
+#define MAX_LEN_OPTIONS	512		// Maximum length of options string
+#define MAX_LINE_LEN	512		// Maximum string length per row
 #define MAX_MENU_LEN	4096	// Maximum string length per menu
 #define MAX_MENUS		32		// Maximum number of menus allowed to be created in total
 #define MAX_WAIT		0.2		// Delay between moving and selecting in the menu
+#define SPLIT_CHAR		"|"		// The character used to split a menus options for the MENU_SELECT_LIST type
 
 
 int g_iSelected[MAXPLAYERS+1];					// Selected row in menu
@@ -380,13 +386,13 @@ int Native_AddOptions(Handle plugin, int numParams)
 		}
 
 		// Add each individually
-		StrCat(entry, maxlength, "|");
+		StrCat(entry, maxlength, SPLIT_CHAR);
 		int last;
 		int pos = 1;
 		int total;
 		while( pos )
 		{
-			pos = StrContains(entry[last], "|");
+			pos = StrContains(entry[last], SPLIT_CHAR);
 			if( pos == -1 )
 			{
 				break;
@@ -420,6 +426,8 @@ int Native_Display(Handle plugin, int numParams)
 		if( g_eAllMenus[i].menu_id == menu_id )
 		{
 			int client = GetNativeCell(1);
+			if( !client ) return false;
+
 			g_iSelected[client] = -1;
 
 			// Displaying to a new client? Reset some things
@@ -539,9 +547,10 @@ void DisplayExtraMenu(int client, int menu_id)
 					Format(sTemp, sizeof(sTemp), "   %s", sTemp);
 				}
 
-				// Selectable on/off
+				// Entry type
 				switch( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) )
 				{
+					// Selectable on/off
 					case MENU_SELECT_ONOFF:
 					{
 						if( g_eAllMenus[menu_id].MenuVals[client].Get(i) == 1 )
@@ -561,9 +570,9 @@ void DisplayExtraMenu(int client, int menu_id)
 						ReplaceString(sTemp, sizeof(sTemp), "_OPT_", sVals);
 					}
 
+					// List options
 					case MENU_SELECT_LIST:
 					{
-						// List options
 						ArrayList aHand = g_eAllMenus[menu_id].RowsData.Get(i, ROW_OPTIONS);
 						if( aHand != null )
 						{
@@ -576,7 +585,7 @@ void DisplayExtraMenu(int client, int menu_id)
 							}
 
 							// Loop each option, find selected in list
-							StrCat(sOpts, sizeof(sOpts), "|");
+							StrCat(sOpts, sizeof(sOpts), SPLIT_CHAR);
 
 							int opt = g_eAllMenus[menu_id].MenuVals[client].Get(i);
 							int pos = 1;
@@ -585,7 +594,7 @@ void DisplayExtraMenu(int client, int menu_id)
 
 							while( pos )
 							{
-								pos = StrContains(sOpts[last], "|");
+								pos = StrContains(sOpts[last], SPLIT_CHAR);
 
 								if( pos == -1 )
 								{
