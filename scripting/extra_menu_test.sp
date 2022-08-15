@@ -157,13 +157,14 @@ public void ExtraMenu_OnSelect(int client, int menu_id, int option, int value)
 			case 0: ClientCommand(client, "sm_godmode @me");
 			case 1: ClientCommand(client, "sm_noclip @me");
 			case 2: ClientCommand(client, "sm_beacon @me");
-			case 3: ReplyToCommand(client, "Speed changed to %d", value);
-			case 4: ReplyToCommand(client, "Difficulty to %d", value);
-			case 5: ReplyToCommand(client, "Tester to %d", value);
+			case 3: PrintToChat(client, "Speed changed to %d", value);
+			case 4: PrintToChat(client, "Difficulty to %d", value);
+			case 5: PrintToChat(client, "Tester to %d", value);
 			case 6: FakeClientCommand(client, "sm_slay @me");
-			case 7: ReplyToCommand(client, "Default value changed to %d", value);
-			case 8: ReplyToCommand(client, "Close after use %d", value);
-			case 9, 10, 11: ReplyToCommand(client, "Second page option %d", option - 5);
+			case 7: PrintToChat(client, "Default value changed to %d", value);
+			case 8: PrintToChat(client, "Close after use %d", value);
+			case 9: PrintToChat(client, "Meter value %d", value);
+			case 10, 11, 12: PrintToChat(client, "Second page option %d", option - 9);
 		}
 	}
 }
