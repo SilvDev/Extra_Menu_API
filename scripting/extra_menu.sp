@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"1.2"
+#define PLUGIN_VERSION 		"1.3"
 
 /*======================================================================================
 	Plugin Info:
@@ -31,6 +31,9 @@
 
 ========================================================================================
 	Change Log:
+
+1.3 (27-Aug-2022)
+	- Fixed not deleting some handles when deleting a menu.
 
 1.2 (15-Aug-2022)
 	- Fixed errors thrown when displaying a menu and the clients index is 0.
@@ -141,7 +144,7 @@ enum struct MenuData
 		for( int i = 0; i < length; i++ )
 		{
 			aHand = this.RowsData.Get(i, ROW_OPTIONS);
-			if( aHand == null )
+			if( aHand != null )
 			{
 				delete aHand;
 			}
