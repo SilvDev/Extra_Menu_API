@@ -23,6 +23,30 @@
 
 
 
+public SharedPlugin __pl_extramenu = 
+{
+	name = "extra_menu",
+	file = "extra_menu.smx",
+#if defined REQUIRE_PLUGIN
+	required = 1,
+#else
+	required = 0,
+#endif
+};
+
+#if !defined REQUIRE_PLUGIN
+public void __pl_extramenu_SetNTVOptional()
+{
+	MarkNativeAsOptional("ExtraMenu_Create");
+	MarkNativeAsOptional("ExtraMenu_Delete");
+	MarkNativeAsOptional("ExtraMenu_AddOptions");
+	MarkNativeAsOptional("ExtraMenu_AddEntry");
+	MarkNativeAsOptional("ExtraMenu_NewPage");
+	MarkNativeAsOptional("ExtraMenu_Display");
+}
+#endif
+
+
 // Different row types allowed in the menu
 enum EXTRA_MENU_TYPE
 {
@@ -40,10 +64,11 @@ enum EXTRA_MENU_TYPE
 *
 * @param	back			Gives a "Previous" option to the menu on the 1st page, useful to return to another menu
 * @param	translation		Path to a translation file used for "ExtraMenu_AddEntry" entries or "" for no translation
+* @param	buttons_nums	Menu movement type. False = W/A/S/D (freezes player). True = 1/2/3/4 (does not freeze player)
 *
 * @return	menu_id, the handle used to to add entries, display and delete the menu.
 */
-native int ExtraMenu_Create(bool back = false, char[] translation = "");
+native int ExtraMenu_Create(bool back = false, char[] translation = "", bool buttons_nums = false);
 
 /**
 * @brief Deletes the specified menu.

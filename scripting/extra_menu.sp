@@ -18,7 +18,7 @@
 
 
 
-#define PLUGIN_VERSION 		"1.3"
+#define PLUGIN_VERSION 		"1.4"
 
 /*======================================================================================
 	Plugin Info:
@@ -31,6 +31,12 @@
 
 ========================================================================================
 	Change Log:
+
+1.4 (15-Oct-2022)
+	- New feature: Native "ExtraMenu_Create" can now create menus that use 1/2/3/4 to move and select instead of freezing the player and using W/A/S/D keys.
+	- Added new "translations/extra_menu.phrases.txt" translation file to support the new menu type.
+	- Changed to store the menu data in StringMaps, for lower memory and an unlimited number of menus.
+	- This is still ultra fast to store and retrieve the menu data.
 
 1.3 (27-Aug-2022)
 	- Fixed not deleting some handles when deleting a menu.
@@ -58,33 +64,38 @@
 #pragma newdecls required
 
 
-#define MAX_LEN_TRANS	128		// Maximum length of translation file name for menu
-#define MAX_LEN_OPTIONS	512		// Maximum length of options string
-#define MAX_LINE_LEN	512		// Maximum string length per row
-#define MAX_MENU_LEN	4096	// Maximum string length per menu
-#define MAX_MENUS		32		// Maximum number of menus allowed to be created in total
-#define MAX_WAIT		0.2		// Delay between moving and selecting in the menu
-#define SPLIT_CHAR		"|"		// The character used to split a menus options for the MENU_SELECT_LIST type
+#define MAX_MENU_LEN		4096	// Maximum string length per menu
+#define MAX_LINE_LEN		512		// Maximum string length per row
+#define MAX_LEN_OPTIONS		512		// Maximum length of options string
+#define MAX_LEN_TRANS		64		// Maximum length of translation file name for menu
+#define MAX_KEYS			4		// Maximum length of keys value
+#define MAX_WAIT			0.2		// Delay between moving and selecting in the menu
+#define SPLIT_CHAR			"|"		// The character used to split a menus options for the MENU_SELECT_LIST type
+#define VERIFY_INDEXES		false	// True = Verifies a menu index exists when accessing. False = Only when creating (should only be required here), errors would be caused by plugins written incorrectly
 
 
 int g_iSelected[MAXPLAYERS+1];					// Selected row in menu
 int g_iPageOpen[MAXPLAYERS+1];					// Selected page in menu
 int g_iMenuTime[MAXPLAYERS+1];					// Time to display menu
 bool g_bMenuOpen[MAXPLAYERS+1];					// Menu open?
+bool g_bMenuNums[MAXPLAYERS+1];					// Buttons menu
 int g_iMenuID[MAXPLAYERS+1] = {-1, ...};		// Selected menu being viewed
 float g_fLastSel[MAXPLAYERS+1];					// Last row selection
 float g_fLastOpt[MAXPLAYERS+1];					// Last option selection
 Menu g_hMenu[MAXPLAYERS+1];						// Menu handle for auto close option selection
 
+bool g_bTranslation;
 ConVar g_hCvarSoundMove, g_hCvarSoundClick;
 char g_sCvarSoundMove[PLATFORM_MAX_PATH], g_sCvarSoundClick[PLATFORM_MAX_PATH];
+
+StringMap g_AllMenus;
 
 GlobalForward g_hFWD_ExtraMenu_OnSelect;
 
 
 
 // ====================================================================================================
-//					STRUCT
+//					MENU STRUCT
 // ====================================================================================================
 #define MAX_DATA 10	// Maximum number of "ROW_*" data to store
 
@@ -116,9 +127,10 @@ enum struct MenuData
 	int MenuTime;
 	int TotalPage;
 	bool MenuBack;
+	bool MenuNums;
 
 	// Create menu
-	void Create(int menu_id, bool back)
+	void Create(int menu_id, bool back, bool buttons_nums)
 	{
 		this.menu_id = menu_id;
 		this.MenuList = new ArrayList(ByteCountToCells(MAX_LINE_LEN));
@@ -126,6 +138,7 @@ enum struct MenuData
 		this.TotalItem = 0;
 		this.TotalPage = 0;
 		this.MenuBack = back;
+		this.MenuNums = buttons_nums;
 
 		for( int i = 1; i <= MaxClients; i++ )
 		{
@@ -150,14 +163,15 @@ enum struct MenuData
 			}
 		}
 
-		// Delete handles
-		delete this.MenuList;
-		delete this.RowsData;
-
+		// Delete user selections
 		for( int i = 1; i <= MaxClients; i++ )
 		{
 			delete this.MenuVals[i];
 		}
+
+		// Delete handles
+		delete this.MenuList;
+		delete this.RowsData;
 	}
 
 	// Add Entry
@@ -193,8 +207,6 @@ enum struct MenuData
 		}
 	}
 }
-
-MenuData g_eAllMenus[MAX_MENUS];
 
 
 
@@ -234,6 +246,14 @@ public void OnPluginStart()
 	// Translations
 	LoadTranslations("core.phrases");
 
+	char sPath[PLATFORM_MAX_PATH];
+	BuildPath(Path_SM, sPath, sizeof(sPath), "translations/extra_menu.phrases.txt");
+	if( FileExists(sPath) )
+	{
+		g_bTranslation = true;
+		LoadTranslations("extra_menu.phrases");
+	}
+
 	// Sound path
 	char sTemp[64];
 	EngineVersion engine = GetEngineVersion();
@@ -252,17 +272,14 @@ public void OnPluginStart()
 	// Cvars
 	g_hCvarSoundMove =		CreateConVar("extra_menu_sound_move",	"buttons/button14.wav", 		"Path to the sound to play when moving through the menu. Or \"\" for no sound.", FCVAR_NOTIFY);
 	g_hCvarSoundClick =		CreateConVar("extra_menu_sound_click",	sTemp,							"Path to the sound to play when clicking a menu option. Or \"\" for no sound.", FCVAR_NOTIFY);
-	CreateConVar("extra_menu_version", PLUGIN_VERSION, "Extra Sound API plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD );
+	CreateConVar("extra_menu_version", PLUGIN_VERSION, "Extra Menu API plugin version.", FCVAR_NOTIFY|FCVAR_DONTRECORD);
 	AutoExecConfig(true, "extra_menu_api");
 
 	g_hCvarSoundMove.AddChangeHook(ConVarChanged_Cvars);
 	g_hCvarSoundClick.AddChangeHook(ConVarChanged_Cvars);
 
-	// Initialize null menus
-	for( int i = 0; i < MAX_MENUS; i++ )
-	{
-		g_eAllMenus[i].menu_id = -1;
-	}
+	// Initialize menus
+	g_AllMenus = new StringMap();
 }
 
 
@@ -293,23 +310,38 @@ void GetCvars()
 // ====================================================================================================
 int Native_CreateMenu(Handle plugin, int numParams)
 {
-	for( int i = 0; i < MAX_MENUS; i++ )
+	char sKey[MAX_KEYS];
+
+	for( int i = 0; i != -1; i++ )
 	{
-		if( g_eAllMenus[i].menu_id == -1 )
+		IntToString(i, sKey, sizeof(sKey));
+
+		if( !g_AllMenus.ContainsKey(sKey) )
 		{
 			bool back = GetNativeCell(1);
 
-			g_eAllMenus[i].Create(i, back);
-			// g_eAllMenus[i].menu_id = view_as<int>(plugin) + i; // Create a more unique ID based on plugin handle?
-			g_eAllMenus[i].menu_id = i;
+			bool buttons_nums;
+			if( numParams > 2 )
+				buttons_nums = GetNativeCell(3);
+
+			MenuData data;
+
+			data.Create(i, back, buttons_nums);
+			// data.menu_id = view_as<int>(plugin) + i; // Create a more unique ID based on plugin handle? Not valid since the plugins built around indexes
+			data.menu_id = i;
 
 			// Load translations
-			char trans[MAX_LEN_TRANS];
-			GetNativeString(2, trans, sizeof(trans));
-			g_eAllMenus[i].Translation = trans;
-			if( trans[0] ) LoadTranslations(trans);
+			if( numParams > 1 )
+			{
+				char trans[MAX_LEN_TRANS];
+				GetNativeString(2, trans, sizeof(trans));
+				data.Translation = trans;
+				if( trans[0] ) LoadTranslations(trans);
+			}
 
-			return g_eAllMenus[i].menu_id;
+			g_AllMenus.SetArray(sKey, data, sizeof(data));
+
+			return i;
 		}
 	}
 
@@ -320,13 +352,16 @@ int Native_DeleteMenu(Handle plugin, int numParams)
 {
 	int menu_id = GetNativeCell(1);
 
-	for( int i = 0; i < MAX_MENUS; i++ )
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	if( g_AllMenus.ContainsKey(sKey) )
 	{
-		if( g_eAllMenus[i].menu_id == menu_id )
-		{
-			g_eAllMenus[i].Delete();
-			return true;
-		}
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		data.Delete();
+		g_AllMenus.Remove(sKey);
 	}
 
 	return false;
@@ -336,76 +371,98 @@ int Native_AddEntry(Handle plugin, int numParams)
 {
 	int menu_id = GetNativeCell(1);
 
-	for( int i = 0; i < MAX_MENUS; i++ )
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
 	{
-		if( g_eAllMenus[i].menu_id == menu_id )
-		{
-			int maxlength;
-			GetNativeStringLength(2, maxlength);
-			maxlength += 1;
-			char[] entry = new char[maxlength];
-			GetNativeString(2, entry, maxlength);
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
 
-			EXTRA_MENU_TYPE type = GetNativeCell(3);
-			bool close = GetNativeCell(4);
-			int default_value = GetNativeCell(5);
-			int add_value = GetNativeCell(6);
-			int add_min = GetNativeCell(7);
-			int add_max = GetNativeCell(8);
+		int maxlength;
+		GetNativeStringLength(2, maxlength);
+		maxlength += 1;
+		char[] entry = new char[maxlength];
+		GetNativeString(2, entry, maxlength);
 
-			g_eAllMenus[i].AddEntry(entry, type, close, default_value, add_value, add_min, add_max);
-			return true;
-		}
+		EXTRA_MENU_TYPE type = GetNativeCell(3);
+		bool close = GetNativeCell(4);
+		int default_value = GetNativeCell(5);
+		int add_value = GetNativeCell(6);
+		int add_min = GetNativeCell(7);
+		int add_max = GetNativeCell(8);
+
+		data.AddEntry(entry, type, close, default_value, add_value, add_min, add_max);
+
+		g_AllMenus.SetArray(sKey, data, sizeof(data));
+		return true;
 	}
 
+	#if VERIFY_INDEXES
 	return false;
+	#endif
 }
 
 int Native_AddOptions(Handle plugin, int numParams)
 {
 	int menu_id = GetNativeCell(1);
 
-	int length = g_eAllMenus[menu_id].RowsData.Length;
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
 
-	ArrayList aHand = g_eAllMenus[menu_id].RowsData.Get(length - 1, ROW_OPTIONS);
-
-	if( aHand == null )
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
 	{
-		aHand = new ArrayList(ByteCountToCells(MAX_LEN_OPTIONS));
-		g_eAllMenus[menu_id].RowsData.Set(length - 1, aHand, ROW_OPTIONS);
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
 
-		int maxlength;
-		GetNativeStringLength(2, maxlength);
-		maxlength += 2;
-		char[] entry = new char[maxlength];
-		GetNativeString(2, entry, maxlength);
+		int length = data.RowsData.Length;
 
-		// Add whole row for translation
-		aHand.PushString(entry);
+		ArrayList aHand = data.RowsData.Get(length - 1, ROW_OPTIONS);
 
-		if( g_eAllMenus[menu_id].Translation[0] )
+		if( aHand == null )
 		{
-			Format(entry, maxlength, "%t", entry, LANG_SERVER);
-		}
+			aHand = new ArrayList(ByteCountToCells(MAX_LEN_OPTIONS));
+			data.RowsData.Set(length - 1, aHand, ROW_OPTIONS);
 
-		// Add each individually
-		StrCat(entry, maxlength, SPLIT_CHAR);
-		int last;
-		int pos = 1;
-		int total;
-		while( pos )
-		{
-			pos = StrContains(entry[last], SPLIT_CHAR);
-			if( pos == -1 )
+			int maxlength;
+			GetNativeStringLength(2, maxlength);
+			maxlength += 2;
+			char[] entry = new char[maxlength];
+			GetNativeString(2, entry, maxlength);
+
+			// Add whole row for translation
+			aHand.PushString(entry);
+
+			if( data.Translation[0] )
 			{
-				break;
+				Format(entry, maxlength, "%t", entry, LANG_SERVER);
 			}
 
-			last = last + pos + 1;
-			total++;
-		}
+			// Add each individually
+			StrCat(entry, maxlength, SPLIT_CHAR);
+			int last;
+			int pos = 1;
+			int total;
+			while( pos )
+			{
+				pos = StrContains(entry[last], SPLIT_CHAR);
+				if( pos == -1 )
+				{
+					break;
+				}
 
-		g_eAllMenus[menu_id].RowsData.Set(length - 1, total, ROW_OPS_LEN);
+				last = last + pos + 1;
+				total++;
+			}
+
+			data.RowsData.Set(length - 1, total, ROW_OPS_LEN);
+
+			g_AllMenus.SetArray(sKey, data, sizeof(data));
+		}
 	}
 
 	return true;
@@ -415,70 +472,96 @@ int Native_AddPage(Handle plugin, int numParams)
 {
 	int menu_id = GetNativeCell(1);
 
-	g_eAllMenus[menu_id].TotalPage++;
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
 
-	return true;
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		data.TotalPage++;
+
+		g_AllMenus.SetArray(sKey, data, sizeof(data));
+
+		return true;
+	}
+
+	#if VERIFY_INDEXES
+	return false;
+	#endif
 }
 
 int Native_Display(Handle plugin, int numParams)
 {
+	int client = GetNativeCell(1);
+	if( !client ) return false;
+
 	int menu_id = GetNativeCell(2);
 
-	for( int i = 0; i < MAX_MENUS; i++ )
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
 	{
-		if( g_eAllMenus[i].menu_id == menu_id )
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		g_iSelected[client] = -1;
+
+		// Displaying to a new client? Reset some things
+		if( data.MenuLastUser[client] != GetClientUserId(client) )
 		{
-			int client = GetNativeCell(1);
-			if( !client ) return false;
+			// Last user
+			data.MenuLastUser[client] = GetClientUserId(client);
 
-			g_iSelected[client] = -1;
+			// Initialize menu with default values
+			int length = data.RowsData.Length;
 
-			// Displaying to a new client? Reset some things
-			if( g_eAllMenus[menu_id].MenuLastUser[client] != GetClientUserId(client) )
+			for( int x = 0; x < length; x++ )
 			{
-				// Last user
-				g_eAllMenus[menu_id].MenuLastUser[client] = GetClientUserId(client);
+				data.MenuVals[client].Set(x, data.RowsData.Get(x, ROW_DEFS));
 
-				// Initialize menu with default values
-				int length = g_eAllMenus[menu_id].RowsData.Length;
-
-				for( int x = 0; x < length; x++ )
+				// Default selected option
+				if( g_iSelected[client] == -1 && data.RowsData.Get(x, ROW_TYPE) != MENU_ENTRY )
 				{
-					g_eAllMenus[menu_id].MenuVals[client].Set(x, g_eAllMenus[i].RowsData.Get(x, ROW_DEFS));
-
-					// Default selected option
-					if( g_iSelected[client] == -1 && g_eAllMenus[menu_id].RowsData.Get(x, ROW_TYPE) != MENU_ENTRY )
-					{
-						g_iSelected[client] = x;
-					}
-				}
-			}
-			else
-			{
-				// Set the default selected option to the first valid entry
-				int length = g_eAllMenus[menu_id].RowsData.Length;
-
-				for( int x = 0; x < length; x++ )
-				{
-					if( g_eAllMenus[menu_id].RowsData.Get(x, ROW_TYPE) != MENU_ENTRY )
-					{
-						g_iSelected[client] = x;
-						break;
-					}
+					g_iSelected[client] = x;
 				}
 			}
 
-			// Menu open time and display
-			int time = GetNativeCell(3);
-
-			g_iPageOpen[client] = 0;
-			g_iMenuTime[client] = time;
-			DisplayExtraMenu(client, menu_id);
-			return true;
+			g_AllMenus.SetArray(sKey, data, sizeof(data));
 		}
+		else
+		{
+			// Set the default selected option to the first valid entry
+			int length = data.RowsData.Length;
+
+			for( int x = 0; x < length; x++ )
+			{
+				if( data.RowsData.Get(x, ROW_TYPE) != MENU_ENTRY )
+				{
+					g_iSelected[client] = x;
+					break;
+				}
+			}
+		}
+
+		// Menu open time and display
+		int time = GetNativeCell(3);
+
+		g_iPageOpen[client] = 0;
+		g_iMenuTime[client] = time;
+		DisplayExtraMenu(client, menu_id);
+		return true;
 	}
 
+	#if VERIFY_INDEXES
 	return false;
+	#endif
 }
 
 
@@ -489,6 +572,7 @@ int Native_Display(Handle plugin, int numParams)
 public void OnClientPutInServer(int client)
 {
 	g_bMenuOpen[client] = false;
+	g_bMenuNums[client] = false;
 	g_iSelected[client] = 0;
 	g_iPageOpen[client] = 0;
 	g_fLastSel[client] = 0.0;
@@ -519,159 +603,252 @@ void DisplayExtraMenu(int client, int menu_id)
 
 	sMenu[0] = '\x0';
 
-	int pages = g_eAllMenus[menu_id].TotalPage;
-	int length = g_eAllMenus[menu_id].RowsData.Length;
-	int selected = g_iSelected[client];
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
 
-	for( int i = 0; i < length; i++ )
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
 	{
-		// Viewing current page
-		if( pages == 0 || g_iPageOpen[client] == g_eAllMenus[menu_id].RowsData.Get(i, ROW_PAGE) )
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		int pages = data.TotalPage;
+		int length = data.RowsData.Length;
+		int selected = g_iSelected[client];
+
+		for( int i = 0; i < length; i++ )
 		{
-			// Get menu row type and string
-			g_eAllMenus[menu_id].MenuList.GetString(i, sTemp, sizeof(sTemp));
-
-			// Translation
-			if( g_eAllMenus[menu_id].Translation[0] )
+			// Viewing current page
+			if( pages == 0 || g_iPageOpen[client] == data.RowsData.Get(i, ROW_PAGE) )
 			{
-				if( strcmp(sTemp, " ") ) // Not a "spacer" line
-				{
-					Format(sTemp, sizeof(sTemp), "%T", sTemp, client);
-				}
-			}
+				// Get menu row type and string
+				data.MenuList.GetString(i, sTemp, sizeof(sTemp));
 
-			// Selectable entry
-			if( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) != MENU_ENTRY )
-			{
-				if( selected == i )
+				// Translation
+				if( data.Translation[0] )
 				{
-					Format(sTemp, sizeof(sTemp), "➤%s", sTemp);
-				} else {
-					Format(sTemp, sizeof(sTemp), "   %s", sTemp);
+					if( strcmp(sTemp, " ") ) // Not a "spacer" line
+					{
+						Format(sTemp, sizeof(sTemp), "%T", sTemp, client);
+					}
 				}
 
-				// Entry type
-				switch( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) )
+				// Selectable entry
+				if( data.RowsData.Get(i, ROW_TYPE) != MENU_ENTRY )
 				{
-					// Selectable on/off
-					case MENU_SELECT_ONOFF:
+					if( selected == i )
 					{
-						if( g_eAllMenus[menu_id].MenuVals[client].Get(i) == 1 )
-						{
-							ReplaceString(sTemp, sizeof(sTemp), "_OPT_", "[●]");
-						} else {
-							ReplaceString(sTemp, sizeof(sTemp), "_OPT_", "[○]");
-						}
+						Format(sTemp, sizeof(sTemp), "➤%s", sTemp);
+					} else {
+						Format(sTemp, sizeof(sTemp), "   %s", sTemp);
 					}
 
-					// Increment/decrement
-					case MENU_SELECT_ADD:
+					// Entry type
+					switch( data.RowsData.Get(i, ROW_TYPE) )
 					{
-						float value = float(g_eAllMenus[menu_id].MenuVals[client].Get(i));
-						FloatToString(value, sVals, sizeof(sVals));
-						ReplaceString(sVals, sizeof(sVals), ".000000", "");
-						ReplaceString(sTemp, sizeof(sTemp), "_OPT_", sVals);
-					}
-
-					// List options
-					case MENU_SELECT_LIST:
-					{
-						ArrayList aHand = g_eAllMenus[menu_id].RowsData.Get(i, ROW_OPTIONS);
-						if( aHand != null )
+						// Selectable on/off
+						case MENU_SELECT_ONOFF:
 						{
-							aHand.GetString(0, sOpts, sizeof(sOpts));
-
-							// Translations
-							if( g_eAllMenus[menu_id].Translation[0] )
+							if( data.MenuVals[client].Get(i) == 1 )
 							{
-								Format(sOpts, sizeof(sOpts), "%T", sOpts, client);
+								ReplaceString(sTemp, sizeof(sTemp), "_OPT_", "[●]");
+							} else {
+								ReplaceString(sTemp, sizeof(sTemp), "_OPT_", "[○]");
 							}
+						}
 
-							// Loop each option, find selected in list
-							StrCat(sOpts, sizeof(sOpts), SPLIT_CHAR);
+						// Increment/decrement
+						case MENU_SELECT_ADD:
+						{
+							float value = float(data.MenuVals[client].Get(i));
+							FloatToString(value, sVals, sizeof(sVals));
+							ReplaceString(sVals, sizeof(sVals), ".000000", "");
+							ReplaceString(sTemp, sizeof(sTemp), "_OPT_", sVals);
+						}
 
-							int opt = g_eAllMenus[menu_id].MenuVals[client].Get(i);
-							int pos = 1;
-							int last;
-							int total;
-
-							while( pos )
+						// List options
+						case MENU_SELECT_LIST:
+						{
+							ArrayList aHand = data.RowsData.Get(i, ROW_OPTIONS);
+							if( aHand != null )
 							{
-								pos = StrContains(sOpts[last], SPLIT_CHAR);
+								aHand.GetString(0, sOpts, sizeof(sOpts));
 
-								if( pos == -1 )
+								// Translations
+								if( data.Translation[0] )
 								{
-									// End of line
-									break;
+									Format(sOpts, sizeof(sOpts), "%T", sOpts, client);
 								}
-								else
+
+								// Loop each option, find selected in list
+								StrCat(sOpts, sizeof(sOpts), SPLIT_CHAR);
+
+								int opt = data.MenuVals[client].Get(i);
+								int pos = 1;
+								int last;
+								int total;
+
+								while( pos )
 								{
-									if( opt == total )
+									pos = StrContains(sOpts[last], SPLIT_CHAR);
+
+									if( pos == -1 )
 									{
-										sOpts[last + pos] = 0;
-										ReplaceString(sTemp, sizeof(sTemp), "_OPT_", sOpts[last]);
+										// End of line
 										break;
 									}
+									else
+									{
+										if( opt == total )
+										{
+											sOpts[last + pos] = 0;
+											ReplaceString(sTemp, sizeof(sTemp), "_OPT_", sOpts[last]);
+											break;
+										}
 
-									total++;
+										total++;
+									}
+
+									last = last + pos + 1;
 								}
 
-								last = last + pos + 1;
 							}
-
 						}
 					}
 				}
+
+				// Concatenate string
+				StrCat(sMenu, sizeof(sMenu), sTemp);
+				StrCat(sMenu, sizeof(sMenu), "\n");
+			}
 			}
 
-			// Concatenate string
-			StrCat(sMenu, sizeof(sMenu), sTemp);
-			StrCat(sMenu, sizeof(sMenu), "\n");
-		}
-	}
+		// Create menu
+		Menu hMenu = new Menu(MenuExtra_Handler);
+		hMenu.SetTitle(sMenu);
+		hMenu.ExitButton = false;
 
-	// Create menu
-	Menu hMenu = new Menu(MenuExtra_Handler);
-	hMenu.SetTitle(sMenu);
-	hMenu.ExitButton = false;
-
-	// Pages
-	if( pages || g_eAllMenus[menu_id].MenuBack )
-	{
-		if( g_iPageOpen[client] > 0 || g_eAllMenus[menu_id].MenuBack )
+		// Pages
+		if( pages || data.MenuBack )
 		{
-			Format(sTemp, sizeof(sTemp), "%T", "Previous", client);
-			hMenu.AddItem("", sTemp);
-		} else {
-			hMenu.AddItem("", "Ignore 1", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
-		}
+			if( data.MenuNums )
+			{
+				if( g_bTranslation )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_LEFT", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_RIGHT", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_UP", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_DOWN", client);
+					hMenu.AddItem("", sTemp);
+				}
+				else
+				{
+					hMenu.AddItem("", "Select Left");
+					hMenu.AddItem("", "Select Right");
+					hMenu.AddItem("", "Move Up");
+					hMenu.AddItem("", "Move Down");
+				}
 
-		if( g_iPageOpen[client] < g_eAllMenus[menu_id].TotalPage )
+				hMenu.AddItem("", "Ignore 5", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				hMenu.AddItem("", "Ignore 6", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				hMenu.AddItem("", "Ignore 7", ITEMDRAW_SPACER);
+
+				if( g_iPageOpen[client] > 0 || data.MenuBack )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "Previous", client);
+					hMenu.AddItem("", sTemp);
+				} else {
+					hMenu.AddItem("", "Ignore 8", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				}
+
+				if( g_iPageOpen[client] < data.TotalPage )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "Next", client);
+					hMenu.AddItem("", sTemp);
+				} else {
+					hMenu.AddItem("", "Ignore 9", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				}
+
+				hMenu.Pagination = false;
+				hMenu.ExitButton = true;
+			}
+			else
+			{
+				if( g_iPageOpen[client] > 0 || data.MenuBack )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "Previous", client);
+					hMenu.AddItem("", sTemp);
+				} else {
+					hMenu.AddItem("", "Ignore 1", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				}
+
+				if( g_iPageOpen[client] < data.TotalPage )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "Next", client);
+					hMenu.AddItem("", sTemp);
+				} else {
+					hMenu.AddItem("", "Ignore 2", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				}
+
+				Format(sTemp, sizeof(sTemp), "%T", "Exit", client);
+				hMenu.AddItem("", sTemp);
+			}
+		}
+		else
 		{
-			Format(sTemp, sizeof(sTemp), "%T", "Next", client);
-			hMenu.AddItem("", sTemp);
-		} else {
-			hMenu.AddItem("", "Ignore 2", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+			if( data.MenuNums )
+			{
+				if( g_bTranslation )
+				{
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_LEFT", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_RIGHT", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_UP", client);
+					hMenu.AddItem("", sTemp);
+					Format(sTemp, sizeof(sTemp), "%T", "EXTRA_MENU_DOWN", client);
+					hMenu.AddItem("", sTemp);
+				}
+				else
+				{
+					hMenu.AddItem("", "Select Left");
+					hMenu.AddItem("", "Select Right");
+					hMenu.AddItem("", "Move Up");
+					hMenu.AddItem("", "Move Down");
+				}
+
+				hMenu.Pagination = false;
+				hMenu.ExitButton = true;
+			}
+			else
+			{
+				hMenu.AddItem("", "Ignore 1", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+				hMenu.AddItem("", "Ignore 2", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
+
+				Format(sTemp, sizeof(sTemp), "%T", "Exit", client);
+				hMenu.AddItem("", sTemp);
+			}
+		}
+
+
+		// Display
+		hMenu.Display(client, g_iMenuTime[client]);
+
+		g_hMenu[client] = hMenu;
+		g_iMenuID[client] = menu_id;
+		g_bMenuOpen[client] = true;
+		g_bMenuNums[client] = data.MenuNums;
+
+		// Freeze client
+		if( !data.MenuNums )
+		{
+			SetEntityMoveType(client, MOVETYPE_NONE);
 		}
 	}
-	else
-	{
-		hMenu.AddItem("", "Ignore 1", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
-		hMenu.AddItem("", "Ignore 2", ITEMDRAW_DISABLED|ITEMDRAW_NOTEXT);
-	}
-
-	Format(sTemp, sizeof(sTemp), "%T", "Exit", client);
-	hMenu.AddItem("", sTemp);
-
-	// Display
-	hMenu.Display(client, g_iMenuTime[client]);
-
-	g_hMenu[client] = hMenu;
-	g_iMenuID[client] = menu_id;
-	g_bMenuOpen[client] = true;
-
-	// Freeze client
-	SetEntityMoveType(client, MOVETYPE_NONE);
 }
 
 
@@ -685,83 +862,96 @@ int MenuExtra_Handler(Menu menu, MenuAction action, int client, int type)
 	{
 		case MenuAction_Select:
 		{
-			switch( type )
+			if( g_bMenuNums[client] )
 			{
-				case 0: // Back
+				switch( type )
 				{
-					int menu_id = g_iMenuID[client];
-
-					g_iPageOpen[client]--;
-					if( g_iPageOpen[client] < 0 )
+					case 0: // Left
 					{
-						g_iPageOpen[client] = 0;
-						Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
-						Call_PushCell(client);
-						Call_PushCell(menu_id);
-						Call_PushCell(-2);
-						Call_PushCell(0);
-						Call_Finish();
-					}
-
-					// New selected index for page
-					else if( g_iPageOpen[client] >= 0 )
-					{
-						int length = g_eAllMenus[menu_id].RowsData.Length;
-
-						for( int i = 0; i < length; i++ )
+						if( GetGameTime() > g_fLastOpt[client] ) // Last selected option timeout
 						{
-							// Default selected option
-							if( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == g_eAllMenus[menu_id].RowsData.Get(i, ROW_PAGE) )
-							{
-								g_iSelected[client] = i;
-								break;
-							}
+							OnButton_Left(client);
 						}
-
-						DisplayExtraMenu(client, g_iMenuID[client]);
-					}
-				}
-
-				case 1: // Next
-				{
-					int menu_id = g_iMenuID[client];
-
-					// New page
-					g_iPageOpen[client]++;
-					if( g_iPageOpen[client] > g_eAllMenus[menu_id].TotalPage) g_iPageOpen[client] = g_eAllMenus[menu_id].TotalPage;
-
-					// New selected index for page
-					int length = g_eAllMenus[menu_id].RowsData.Length;
-
-					for( int i = 0; i < length; i++ )
-					{
-						// Default selected option
-						if( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == g_eAllMenus[menu_id].RowsData.Get(i, ROW_PAGE) )
+						else
 						{
-							g_iSelected[client] = i;
-							break;
+							// Redisplay menu
+							g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+							DisplayExtraMenu(client, g_iMenuID[client]);
 						}
 					}
-
-					DisplayExtraMenu(client, g_iMenuID[client]);
+					case 1: // Right
+					{
+						if( GetGameTime() > g_fLastOpt[client] ) // Last selected option timeout
+						{
+							OnButton_Right(client);
+						}
+						else
+						{
+							// Redisplay menu
+							g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+							DisplayExtraMenu(client, g_iMenuID[client]);
+						}
+					}
+					case 2: // Up
+					{
+						if( GetGameTime() > g_fLastSel[client] ) // Last selected row timeout
+						{
+							OnButton_Up(client);
+						}
+						else
+						{
+							// Redisplay menu
+							g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+							DisplayExtraMenu(client, g_iMenuID[client]);
+						}
+					}
+					case 3: // Down
+					{
+						if( GetGameTime() > g_fLastSel[client] ) // Last selected row timeout
+						{
+							OnButton_Down(client);
+						}
+						else
+						{
+							// Redisplay menu
+							g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+							DisplayExtraMenu(client, g_iMenuID[client]);
+						}
+					}
+					case 7: // Previous
+					{
+						OnButton_Back(client);
+					}
+					case 8: // Next
+					{
+						OnButton_Next(client);
+					}
+					case 9: // Exit
+					{
+						OnButton_Exit(client);
+						CancelMenu(menu);
+					}
 				}
-
-				case 2: // Exit
+			}
+			else
+			{
+				switch( type )
 				{
-					int menu_id = g_iMenuID[client];
+					case 0: // Back
+					{
+						OnButton_Back(client);
+					}
 
-					Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
-					Call_PushCell(client);
-					Call_PushCell(menu_id);
-					Call_PushCell(-1);
-					Call_PushCell(0);
-					Call_Finish();
+					case 1: // Next
+					{
+						OnButton_Next(client);
+					}
 
-					g_iMenuID[client] = -1;
-					g_iSelected[client] = 0;
-					g_bMenuOpen[client] = false;
-					CancelMenu(menu);
-					SetEntityMoveType(client, MOVETYPE_WALK);
+					case 2: // Exit
+					{
+						OnButton_Exit(client);
+						CancelMenu(menu);
+					}
 				}
 			}
 		}
@@ -772,7 +962,15 @@ int MenuExtra_Handler(Menu menu, MenuAction action, int client, int type)
 				case MenuCancel_Exit, MenuCancel_Interrupted, MenuCancel_Timeout:
 				{
 					g_bMenuOpen[client] = false;
-					SetEntityMoveType(client, MOVETYPE_WALK);
+
+					if( !g_bMenuNums[client] )
+					{
+						SetEntityMoveType(client, MOVETYPE_WALK);
+					}
+					else if( type == MenuCancel_Exit )
+					{
+						OnButton_Exit(client);
+					}
 				}
 			}
 		}
@@ -792,99 +990,17 @@ int MenuExtra_Handler(Menu menu, MenuAction action, int client, int type)
 // ====================================================================================================
 public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3], float angles[3], int &weapon, int &subtype, int &cmdnum, int &tickcount, int &seed, int mouse[2])
 {
-	if( g_bMenuOpen[client] ) // Menu is open
+	if( g_bMenuOpen[client] && !g_bMenuNums[client] ) // Menu is open AND using W/A/S/D
 	{
 		if( GetGameTime() > g_fLastSel[client] ) // Last selected row timeout
 		{
-			if( buttons & IN_BACK || buttons & IN_FORWARD )
+			if( buttons & IN_BACK )
 			{
-				int menu_id = g_iMenuID[client];
-				int length = g_eAllMenus[menu_id].RowsData.Length;
-
-				if( buttons & IN_BACK )
-				{
-					g_iSelected[client]++;
-
-					int max = g_iSelected[client];
-					int min = -1;
-
-					// Validate next entry index
-					if( max >= length || g_eAllMenus[menu_id].RowsData.Get(max, ROW_TYPE) == MENU_ENTRY || g_iPageOpen[client] != g_eAllMenus[menu_id].RowsData.Get(max, ROW_PAGE) )
-					{
-						max = -1;
-
-						// Find min/max index for current page
-						for( int i = 0; i < length; i++ )
-						{
-							if( g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == g_eAllMenus[menu_id].RowsData.Get(i, ROW_PAGE) )
-							{
-								if( min == -1 ) min = i;
-								if( max == -1 && i >= g_iSelected[client] ) max = i;
-							}
-						}
-
-						if( max == -1 || max >= length )
-						{
-							g_iSelected[client] = min;
-						}
-						else
-						{
-							g_iSelected[client] = max;
-						}
-					}
-
-					// Sound
-					if( g_sCvarSoundMove[0] )
-					{
-						EmitSoundToClient(client, g_sCvarSoundMove);
-					}
-
-					// Redisplay menu
-					g_fLastSel[client] = GetGameTime() + MAX_WAIT;
-					DisplayExtraMenu(client, g_iMenuID[client]);
-				}
-				else if( buttons & IN_FORWARD )
-				{
-					g_iSelected[client]--;
-
-					int max = -1;
-					int min = g_iSelected[client];
-
-					// Validate prev entry index
-					if( min < 0 || g_iPageOpen[client] != g_eAllMenus[menu_id].RowsData.Get(min, ROW_PAGE) || g_eAllMenus[menu_id].RowsData.Get(min, ROW_TYPE) == MENU_ENTRY )
-					{
-						min = -1;
-
-						// Find min/max index for current page
-						for( int i = length - 1; i >= 0 ; i-- )
-						{
-							if( g_iPageOpen[client] == g_eAllMenus[menu_id].RowsData.Get(i, ROW_PAGE) && g_eAllMenus[menu_id].RowsData.Get(i, ROW_TYPE) != MENU_ENTRY )
-							{
-								if( max == -1 ) max = i;
-								if( min == -1 && i <= g_iSelected[client] ) min = i;
-							}
-						}
-
-						if( min == -1 )
-						{
-							g_iSelected[client] = max;
-						}
-						else
-						{
-							g_iSelected[client] = min;
-						}
-					}
-
-					// Sound
-					if( g_sCvarSoundMove[0] )
-					{
-						EmitSoundToClient(client, g_sCvarSoundMove);
-					}
-
-					// Redisplay menu
-					g_fLastSel[client] = GetGameTime() + MAX_WAIT;
-					DisplayExtraMenu(client, g_iMenuID[client]);
-				}
+				OnButton_Down(client);
+			}
+			else if( buttons & IN_FORWARD )
+			{
+				OnButton_Up(client);
 			}
 		}
 
@@ -892,179 +1008,11 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 		{
 			if( buttons & IN_MOVERIGHT )
 			{
-				bool trigger = true;
-				int menu_id = g_iMenuID[client];
-				int index = g_iSelected[client];
-
-				// Depending on menu type, toggle on or increment value
-				switch( g_eAllMenus[menu_id].RowsData.Get(index, ROW_TYPE) )
-				{
-					case MENU_SELECT_ONOFF:
-					{
-						if( g_eAllMenus[menu_id].MenuVals[client].Get(index) == 0 ) // Prevent triggering if already selected
-						{
-							g_eAllMenus[menu_id].MenuVals[client].Set(index, 1);
-						}
-						else
-						{
-							trigger = false;
-						}
-					}
-
-					case MENU_SELECT_ADD:
-					{
-						// Increment, validate value
-						int new_val = g_eAllMenus[menu_id].RowsData.Get(index, ROW_INCRE);
-						int old_val = g_eAllMenus[menu_id].MenuVals[client].Get(index);
-						int max = g_eAllMenus[menu_id].RowsData.Get(index, ROW_IN_MAX);
-						new_val = old_val + new_val;
-						if( new_val > max ) new_val = max;
-
-						g_eAllMenus[menu_id].MenuVals[client].Set(index, new_val);
-					}
-
-					case MENU_SELECT_LIST:
-					{
-						// Get size of list of options and select next
-						ArrayList aHand;
-						aHand = g_eAllMenus[menu_id].RowsData.Get(index, ROW_OPTIONS);
-
-						if( aHand != null )
-						{
-							int length = g_eAllMenus[menu_id].RowsData.Get(index, ROW_OPS_LEN);
-
-							int opt = g_eAllMenus[menu_id].MenuVals[client].Get(index) + 1;
-							if( opt >= length )
-							{
-								opt = 0;
-							}
-
-							g_eAllMenus[menu_id].MenuVals[client].Set(index, opt);
-						}
-					}
-
-					case MENU_ENTRY:
-					{
-						trigger = false;
-					}
-				}
-
-				// Sound
-				if( g_sCvarSoundClick[0] )
-				{
-					EmitSoundToClient(client, g_sCvarSoundClick);
-				}
-
-				// Display
-				g_fLastOpt[client] = GetGameTime() + MAX_WAIT;
-
-				if( g_eAllMenus[menu_id].RowsData.Get(index, ROW_CLOSE) == false )
-				{
-					DisplayExtraMenu(client, g_iMenuID[client]);
-				}
-				else
-				{
-					CloseExtraMenu(client);
-				}
-
-				// Fire forward on selection
-				if( trigger )
-				{
-					Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
-					Call_PushCell(client);
-					Call_PushCell(menu_id);
-					Call_PushCell(g_eAllMenus[menu_id].RowsData.Get(index, ROW_INDEX));
-					Call_PushCell(g_eAllMenus[menu_id].MenuVals[client].Get(index));
-					Call_Finish();
-				}
+				OnButton_Right(client);
 			}
 			else if( buttons & IN_MOVELEFT )
 			{
-				bool trigger = true;
-				int menu_id = g_iMenuID[client];
-				int index = g_iSelected[client];
-
-				// Depending on menu type, toggle of or decrement value
-				switch( g_eAllMenus[menu_id].RowsData.Get(index, ROW_TYPE) )
-				{
-					case MENU_SELECT_ONOFF:
-					{
-						if( g_eAllMenus[menu_id].MenuVals[client].Get(index) == 1 ) // Prevent triggering if already unselected
-						{
-							g_eAllMenus[menu_id].MenuVals[client].Set(index, 0);
-						}
-						else
-						{
-							trigger = false;
-						}
-					}
-
-					case MENU_SELECT_ADD:
-					{
-						// Decrement, validate value
-						int new_val = g_eAllMenus[menu_id].RowsData.Get(index, ROW_INCRE);
-						int old_val = g_eAllMenus[menu_id].MenuVals[client].Get(index);
-						int min = g_eAllMenus[menu_id].RowsData.Get(index, ROW_IN_MIN);
-						new_val = old_val - new_val;
-						if( new_val < min ) new_val = min;
-
-						g_eAllMenus[menu_id].MenuVals[client].Set(index, new_val);
-					}
-
-					case MENU_SELECT_LIST:
-					{
-						// Get size of list of options and select last
-						ArrayList aHand;
-						aHand = g_eAllMenus[menu_id].RowsData.Get(index, ROW_OPTIONS);
-
-						if( aHand != null )
-						{
-							int length = g_eAllMenus[menu_id].RowsData.Get(index, ROW_OPS_LEN);
-
-							int opt = g_eAllMenus[menu_id].MenuVals[client].Get(index) - 1;
-							if( opt < 0 )
-							{
-								opt = length - 1;
-							}
-
-							g_eAllMenus[menu_id].MenuVals[client].Set(index, opt);
-						}
-					}
-
-					case MENU_ENTRY:
-					{
-						trigger = false;
-					}
-				}
-
-				// Sound
-				if( g_sCvarSoundClick[0] )
-				{
-					EmitSoundToClient(client, g_sCvarSoundClick);
-				}
-
-				// Display
-				g_fLastOpt[client] = GetGameTime() + MAX_WAIT;
-
-				if( g_eAllMenus[menu_id].RowsData.Get(index, ROW_CLOSE) == false )
-				{
-					DisplayExtraMenu(client, g_iMenuID[client]);
-				}
-				else
-				{
-					CloseExtraMenu(client);
-				}
-
-				// Fire forward on selection
-				if( trigger )
-				{
-					Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
-					Call_PushCell(client);
-					Call_PushCell(menu_id);
-					Call_PushCell(g_eAllMenus[menu_id].RowsData.Get(index, ROW_INDEX));
-					Call_PushCell(g_eAllMenus[menu_id].MenuVals[client].Get(index));
-					Call_Finish();
-				}
+				OnButton_Left(client);
 			}
 		}
 	}
@@ -1075,7 +1023,448 @@ public Action OnPlayerRunCmd(int client, int &buttons, int &impulse, float vel[3
 
 
 // ====================================================================================================
-//					CLOSE MEUN
+//					MENU CLICKS
+// ====================================================================================================
+void OnButton_Up(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		int length = data.RowsData.Length;
+
+		g_iSelected[client]--;
+
+		int max = -1;
+		int min = g_iSelected[client];
+
+		// Validate prev entry index
+		if( min < 0 || g_iPageOpen[client] != data.RowsData.Get(min, ROW_PAGE) || data.RowsData.Get(min, ROW_TYPE) == MENU_ENTRY )
+		{
+			min = -1;
+
+			// Find min/max index for current page
+			for( int i = length - 1; i >= 0 ; i-- )
+			{
+				if( g_iPageOpen[client] == data.RowsData.Get(i, ROW_PAGE) && data.RowsData.Get(i, ROW_TYPE) != MENU_ENTRY )
+				{
+					if( max == -1 ) max = i;
+					if( min == -1 && i <= g_iSelected[client] ) min = i;
+				}
+			}
+
+			if( min == -1 )
+			{
+				g_iSelected[client] = max;
+			}
+			else
+			{
+				g_iSelected[client] = min;
+			}
+		}
+
+		// Sound
+		if( g_sCvarSoundMove[0] )
+		{
+			EmitSoundToClient(client, g_sCvarSoundMove);
+		}
+
+		// Redisplay menu
+		g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+		DisplayExtraMenu(client, g_iMenuID[client]);
+	}
+}
+
+void OnButton_Down(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		int length = data.RowsData.Length;
+
+		g_iSelected[client]++;
+
+		int max = g_iSelected[client];
+		int min = -1;
+
+		// Validate next entry index
+		if( max >= length || data.RowsData.Get(max, ROW_TYPE) == MENU_ENTRY || g_iPageOpen[client] != data.RowsData.Get(max, ROW_PAGE) )
+		{
+			max = -1;
+
+			// Find min/max index for current page
+			for( int i = 0; i < length; i++ )
+			{
+				if( data.RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == data.RowsData.Get(i, ROW_PAGE) )
+				{
+					if( min == -1 ) min = i;
+					if( max == -1 && i >= g_iSelected[client] ) max = i;
+				}
+			}
+
+			if( max == -1 || max >= length )
+			{
+				g_iSelected[client] = min;
+			}
+			else
+			{
+				g_iSelected[client] = max;
+			}
+		}
+
+		// Sound
+		if( g_sCvarSoundMove[0] )
+		{
+			EmitSoundToClient(client, g_sCvarSoundMove);
+		}
+
+		// Redisplay menu
+		g_fLastSel[client] = GetGameTime() + MAX_WAIT;
+		DisplayExtraMenu(client, g_iMenuID[client]);
+	}
+}
+
+void OnButton_Left(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		bool trigger = true;
+		int index = g_iSelected[client];
+
+		// Depending on menu type, toggle of or decrement value
+		switch( data.RowsData.Get(index, ROW_TYPE) )
+		{
+			case MENU_SELECT_ONOFF:
+			{
+				if( data.MenuVals[client].Get(index) == 1 ) // Prevent triggering if already unselected
+				{
+					data.MenuVals[client].Set(index, 0);
+				}
+				else
+				{
+					trigger = false;
+				}
+			}
+
+			case MENU_SELECT_ADD:
+			{
+				// Decrement, validate value
+				int new_val = data.RowsData.Get(index, ROW_INCRE);
+				int old_val = data.MenuVals[client].Get(index);
+				int min = data.RowsData.Get(index, ROW_IN_MIN);
+				new_val = old_val - new_val;
+				if( new_val < min ) new_val = min;
+
+				data.MenuVals[client].Set(index, new_val);
+			}
+
+			case MENU_SELECT_LIST:
+			{
+				// Get size of list of options and select last
+				ArrayList aHand;
+				aHand = data.RowsData.Get(index, ROW_OPTIONS);
+
+				if( aHand != null )
+				{
+					int length = data.RowsData.Get(index, ROW_OPS_LEN);
+
+					int opt = data.MenuVals[client].Get(index) - 1;
+					if( opt < 0 )
+					{
+						opt = length - 1;
+					}
+
+					data.MenuVals[client].Set(index, opt);
+				}
+			}
+
+			case MENU_ENTRY:
+			{
+				trigger = false;
+			}
+		}
+
+		// Sound
+		if( g_sCvarSoundClick[0] )
+		{
+			EmitSoundToClient(client, g_sCvarSoundClick);
+		}
+
+		// Display
+		g_fLastOpt[client] = GetGameTime() + MAX_WAIT;
+
+		if( data.RowsData.Get(index, ROW_CLOSE) == false )
+		{
+			DisplayExtraMenu(client, g_iMenuID[client]);
+		}
+		else
+		{
+			CloseExtraMenu(client);
+		}
+
+		// Fire forward on selection
+		if( trigger )
+		{
+			Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
+			Call_PushCell(client);
+			Call_PushCell(menu_id);
+			Call_PushCell(data.RowsData.Get(index, ROW_INDEX));
+			Call_PushCell(data.MenuVals[client].Get(index));
+			Call_Finish();
+		}
+
+		g_AllMenus.SetArray(sKey, data, sizeof(data));
+	}
+}
+
+void OnButton_Right(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		bool trigger = true;
+		int index = g_iSelected[client];
+
+		// Depending on menu type, toggle on or increment value
+		switch( data.RowsData.Get(index, ROW_TYPE) )
+		{
+			case MENU_SELECT_ONOFF:
+			{
+				if( data.MenuVals[client].Get(index) == 0 ) // Prevent triggering if already selected
+				{
+					data.MenuVals[client].Set(index, 1);
+				}
+				else
+				{
+					trigger = false;
+				}
+			}
+
+			case MENU_SELECT_ADD:
+			{
+				// Increment, validate value
+				int new_val = data.RowsData.Get(index, ROW_INCRE);
+				int old_val = data.MenuVals[client].Get(index);
+				int max = data.RowsData.Get(index, ROW_IN_MAX);
+				new_val = old_val + new_val;
+				if( new_val > max ) new_val = max;
+
+				data.MenuVals[client].Set(index, new_val);
+			}
+
+			case MENU_SELECT_LIST:
+			{
+				// Get size of list of options and select next
+				ArrayList aHand;
+				aHand = data.RowsData.Get(index, ROW_OPTIONS);
+
+				if( aHand != null )
+				{
+					int length = data.RowsData.Get(index, ROW_OPS_LEN);
+
+					int opt = data.MenuVals[client].Get(index) + 1;
+					if( opt >= length )
+					{
+						opt = 0;
+					}
+
+					data.MenuVals[client].Set(index, opt);
+				}
+			}
+
+			case MENU_ENTRY:
+			{
+				trigger = false;
+			}
+		}
+
+		// Sound
+		if( g_sCvarSoundClick[0] )
+		{
+			EmitSoundToClient(client, g_sCvarSoundClick);
+		}
+
+		// Display
+		g_fLastOpt[client] = GetGameTime() + MAX_WAIT;
+
+		if( data.RowsData.Get(index, ROW_CLOSE) == false )
+		{
+			DisplayExtraMenu(client, g_iMenuID[client]);
+		}
+		else
+		{
+			CloseExtraMenu(client);
+		}
+
+		// Fire forward on selection
+		if( trigger )
+		{
+			Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
+			Call_PushCell(client);
+			Call_PushCell(menu_id);
+			Call_PushCell(data.RowsData.Get(index, ROW_INDEX));
+			Call_PushCell(data.MenuVals[client].Get(index));
+			Call_Finish();
+		}
+
+		g_AllMenus.SetArray(sKey, data, sizeof(data));
+	}
+}
+
+void OnButton_Back(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		g_iPageOpen[client]--;
+		if( g_iPageOpen[client] < 0 )
+		{
+			g_iPageOpen[client] = 0;
+			Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
+			Call_PushCell(client);
+			Call_PushCell(menu_id);
+			Call_PushCell(-2);
+			Call_PushCell(0);
+			Call_Finish();
+		}
+
+		// New selected index for page
+		else if( g_iPageOpen[client] >= 0 )
+		{
+			int length = data.RowsData.Length;
+
+			for( int i = 0; i < length; i++ )
+			{
+				// Default selected option
+				if( data.RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == data.RowsData.Get(i, ROW_PAGE) )
+				{
+					g_iSelected[client] = i;
+					break;
+				}
+			}
+
+			DisplayExtraMenu(client, g_iMenuID[client]);
+		}
+	}
+}
+
+void OnButton_Next(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+
+		// New page
+		g_iPageOpen[client]++;
+		if( g_iPageOpen[client] > data.TotalPage) g_iPageOpen[client] = data.TotalPage;
+
+		// New selected index for page
+		int length = data.RowsData.Length;
+
+		for( int i = 0; i < length; i++ )
+		{
+			// Default selected option
+			if( data.RowsData.Get(i, ROW_TYPE) != MENU_ENTRY && g_iPageOpen[client] == data.RowsData.Get(i, ROW_PAGE) )
+			{
+				g_iSelected[client] = i;
+				break;
+			}
+		}
+
+		DisplayExtraMenu(client, g_iMenuID[client]);
+	}
+}
+
+void OnButton_Exit(int client)
+{
+	int menu_id = g_iMenuID[client];
+
+	char sKey[MAX_KEYS];
+	IntToString(menu_id, sKey, sizeof(sKey));
+
+	#if VERIFY_INDEXES
+	if( g_AllMenus.ContainsKey(sKey) )
+	#endif
+	{
+		MenuData data;
+		g_AllMenus.GetArray(sKey, data, sizeof(data));
+
+		Call_StartForward(g_hFWD_ExtraMenu_OnSelect);
+		Call_PushCell(client);
+		Call_PushCell(menu_id);
+		Call_PushCell(-1);
+		Call_PushCell(0);
+		Call_Finish();
+
+		g_iMenuID[client] = -1;
+		g_iSelected[client] = 0;
+		g_bMenuOpen[client] = false;
+
+		if( !data.MenuNums )
+		{
+			SetEntityMoveType(client, MOVETYPE_WALK);
+		}
+	}
+}
+
+
+
+// ====================================================================================================
+//					CLOSE MENU
 // ====================================================================================================
 // Send a blank menu to the client when auto close is enabled. CancelMenu() would throw invalid handle errors and CancelClientMenu() did nothing.
 // ClientCommand(client, "slot10"); works but shows "FCVAR_SERVER_CAN_EXECUTE prevented server running command: menuselect" in client console.
@@ -1084,7 +1473,11 @@ void CloseExtraMenu(int client)
 	g_iMenuID[client] = -1;
 	g_iSelected[client] = 0;
 	g_bMenuOpen[client] = false;
-	SetEntityMoveType(client, MOVETYPE_WALK);
+
+	if( !g_bMenuNums[client] )
+	{
+		SetEntityMoveType(client, MOVETYPE_WALK);
+	}
 
 	Menu hMenu = new Menu(MenuClose_Handler);
 	hMenu.SetTitle(" ");
